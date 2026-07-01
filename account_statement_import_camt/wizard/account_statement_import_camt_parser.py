@@ -451,15 +451,29 @@ class AccountStatementImportCamtParser(models.AbstractModel):
             raise ValueError("Not a valid xml file, or not an xml file at all.")
         ns = root.tag[1 : root.tag.index("}")]
         self.check_version(ns, root)
-        statements = []
-        currency = None
-        account_number = None
+        # A single CAMT file may contain several <Stmt> nodes belonging to
+        # different bank accounts (e.g. a consolidated export covering
+        # several companies). Group statements by (account_number, currency)
+        # and return one triplet per account so each one is matched to its
+        # own journal instead of all being attached to a single journal.
+        accounts = []
+        statements_per_account = {}
         for node in root[0][1:]:
             statement = self.parse_statement(ns, node)
-            if len(statement["transactions"]):
-                if "currency" in statement:
-                    currency = statement.pop("currency")
-                if "account_number" in statement:
-                    account_number = statement.pop("account_number")
-                statements.append(statement)
-        return currency, account_number, statements
+            if not len(statement["transactions"]):
+                continue
+            currency = statement.pop("currency", None)
+            account_number = statement.pop("account_number", None)
+            key = (account_number, currency)
+            if key not in statements_per_account:
+                accounts.append(key)
+                statements_per_account[key] = []
+            statements_per_account[key].append(statement)
+        return [
+            (
+                currency,
+                account_number,
+                statements_per_account[(account_number, currency)],
+            )
+            for account_number, currency in accounts
+        ]

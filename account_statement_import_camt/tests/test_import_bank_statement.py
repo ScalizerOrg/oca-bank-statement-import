@@ -95,6 +95,22 @@ class TestParser(TestParserCommon):
     def test_parse_no_ntry(self):
         self._do_parse_test("test-camt053-no-ntry", "golden-camt053-no-ntry.pydata")
 
+    def test_parse_multi_account(self):
+        """A CAMT file with <Stmt> nodes for several bank accounts must be
+        parsed into one (currency, account_number, statements) triplet per
+        account, instead of a single triplet using only the last account."""
+        testfile = file_path(
+            "account_statement_import_camt/tests/samples/test-camt053-multi-account"
+        )
+        with open(testfile, "rb") as inputf:
+            res = self.parser.parse(inputf.read())
+        self.assertEqual(len(res), 2)
+        account_numbers = [account_number for _currency, account_number, _ in res]
+        self.assertEqual(account_numbers, ["NL77ABNA0574908765", "NL46ABNA0499998748"])
+        for _currency, _account_number, statements in res:
+            self.assertEqual(len(statements), 1)
+            self.assertEqual(len(statements[0]["transactions"]), 1)
+
 
 class TestImport(TransactionCase):
     """Run test to import camt import."""
@@ -203,3 +219,39 @@ class TestImport(TransactionCase):
 
         self.assertTrue(all([st.line_ids for st in bank_st_record]))
         self.assertEqual(bank_st_record[0].line_ids.mapped("sequence"), [1, 2, 3])
+
+    def test_multi_account_import(self):
+        """A single CAMT file with statements for several bank accounts must
+        create one bank statement per account, each attached to its own
+        journal, instead of attaching everything to a single journal."""
+        second_bank = self.env["res.partner.bank"].search(
+            [("acc_number", "=", "NL46ABNA0499998748")], limit=1
+        )
+        second_journal = self.env["account.journal"].create(
+            {
+                "name": "Bank Journal 2 - (test camt)",
+                "code": "TBNKCAMT2",
+                "type": "bank",
+                "bank_account_id": second_bank.id,
+                "currency_id": self.env.ref("base.EUR").id,
+            }
+        )
+        testfile = file_path(
+            "account_statement_import_camt/tests/samples/test-camt053-multi-account"
+        )
+        with open(testfile, "rb") as datafile:
+            camt_file = base64.b64encode(datafile.read())
+            self.env["account.statement.import"].create(
+                {"statement_filename": "test import", "statement_file": camt_file}
+            ).import_file_button()
+
+        statement_a = self.env["account.bank.statement"].search(
+            [("name", "=", "MultiTest/A/1")]
+        )
+        statement_b = self.env["account.bank.statement"].search(
+            [("name", "=", "MultiTest/B/1")]
+        )
+        self.assertTrue(statement_a)
+        self.assertTrue(statement_b)
+        self.assertEqual(statement_a.journal_id.code, "TBNKCAMT")
+        self.assertEqual(statement_b.journal_id, second_journal)
